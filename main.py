@@ -1,51 +1,47 @@
-import os.path
-import base64
-import pickle
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-# If modifying these SCOPES, delete the file token.pickle.
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+from authentication import authenticate
+import email_handling as eh
+import ocr_handling as oh
 
 def main():
-    creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
+    """
+    Main function to process unread emails and extract text from their attachments.
+    """
+    # Authenticate and get the Gmail API service
+    creds = authenticate()
+    service = eh.get_service(creds)
     
-    # If there are no (valid) credentials available, prompt the user to log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+    try:  # Handle potential connectivity or other unexpected issues
+        # Fetch unread emails
+        messages = eh.get_unread_emails(service)
+        if not messages:
+            print("No unread messages found.")
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('/Users/ian/Downloads/client_secret_1064613950676-dldu288otn9lijklupqr4otit9d38tok.apps.googleusercontent.com.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        
-        # Save the credentials for the next run
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-    
-    # Build the Gmail API service
-    service = build('gmail', 'v1', credentials=creds)
-    
-    # Fetch unread emails
-    results = service.users().messages().list(userId='me', q='is:unread').execute()
-    messages = results.get('messages', [])
-
-    if not messages:
-        print("No unread messages found.")
-    else:
-        for message in messages:
-            msg = service.users().messages().get(userId='me', id=message['id']).execute()
-            email_data = msg['payload']['headers']
-            for values in email_data:
-                name = values['name']
-                if name == 'Subject':
-                    subject = values['value']
-                    print("Subject:", subject)
-                    break
+            for message in messages:
+                # Fetch email data
+                email_data = eh.get_email_data(service, message['id'])
+                
+                # Extract and print the subject of the email
+                headers = email_data['payload']['headers']
+                subject = next(header['value'] for header in headers if header['name'] == 'Subject')
+                print("Subject:", subject)
+                
+                # Extract text from the attachments and print
+                attachments = eh.get_email_attachments(service, email_data)
+                for attachment in attachments:
+                    try:  # Handle potential Tesseract errors
+                        extracted_text = oh.get_text_from_image(attachment)
+                        print("Extracted Text:", extracted_text)
+                        print("===================================")
+                    except oh.TesseractError as te:
+                        print(f"Error processing image with Tesseract: {te}")
+                        continue  # Continue to next attachment or email
+                
+                # Mark the email as read
+                eh.mark_email_as_read(service, message['id'])
+    except Exception as e:
+        print(f"Error encountered: {e}")
+        # For connectivity issues, you might want to retry or prompt the user
+        # to check their connection.
 
 if __name__ == '__main__':
     main()
